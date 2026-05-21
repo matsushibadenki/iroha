@@ -1,0 +1,66 @@
+import Foundation
+
+// AI Backend selection
+public enum AIBackend: String, Codable, CaseIterable, Sendable {
+    case foundationModels = "Foundation Models"
+    case ollama = "Ollama"
+    case mlxSwift = "MLX Swift"
+    case openAI = "OpenAI API"
+
+    public static var `default`: AIBackend {
+        if #available(macOS 26.0, *) {
+            let availability = FoundationModelsClientCompat.checkAvailability()
+            if availability.isAvailable {
+                return .foundationModels
+            }
+        }
+        return .openAI
+    }
+}
+
+// Unified AI Client that routes to the appropriate backend
+public enum AIClient {
+    public static func sendRequest(
+        _ request: OpenAIRequest,
+        backend: AIBackend,
+        apiKey: String = "",
+        apiEndpoint: String = "",
+        logger: ((String) -> Void)? = nil
+    ) async throws -> [String] {
+        switch backend {
+        case .foundationModels:
+            return try await FoundationModelsClientCompat.sendRequest(request, logger: logger)
+        case .ollama:
+            return try await OllamaClient.sendRequest(request, endpoint: apiEndpoint, logger: logger)
+        case .mlxSwift:
+            return try await MLXSwiftClient.sendRequest(request, logger: logger)
+        case .openAI:
+            return try await OpenAIClient.sendRequest(request, apiKey: apiKey, apiEndpoint: apiEndpoint, logger: logger)
+        }
+    }
+
+    public static func sendTextTransformRequest(
+        _ prompt: String,
+        backend: AIBackend,
+        modelName: String = "",
+        apiKey: String = "",
+        apiEndpoint: String = "",
+        logger: ((String) -> Void)? = nil
+    ) async throws -> String {
+        switch backend {
+        case .foundationModels:
+            return try await FoundationModelsClientCompat.sendTextTransformRequest(prompt, logger: logger)
+        case .ollama:
+            return try await OllamaClient.sendTextTransformRequest(prompt: prompt, modelName: modelName, endpoint: apiEndpoint, logger: logger)
+        case .mlxSwift:
+            return try await MLXSwiftClient.sendTextTransformRequest(prompt, modelName: modelName, logger: logger)
+        case .openAI:
+            return try await OpenAIClient.sendTextTransformRequest(
+                prompt: prompt,
+                modelName: modelName,
+                apiKey: apiKey,
+                apiEndpoint: apiEndpoint
+            )
+        }
+    }
+}

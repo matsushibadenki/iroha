@@ -1,0 +1,11 @@
+/*
+  InfoPlist.strings
+  iroha
+*/
+
+CFBundleName = "いろは";
+CFBundleDisplayName = "いろは";
+
+com.apple.inputmethod.Japanese = "いろは (日本語)";
+dev.ensan.inputmethod.iroha.Japanese = "いろは (日本語)";
+TISLocalizedInputSourceName = "いろは";

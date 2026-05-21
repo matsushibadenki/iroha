@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>LSUIElement</key>
+	<true/>
+	<key>CFBundleName</key>
+	<string>iroha</string>
+	<key>CFBundleDisplayName</key>
+	<string>iroha</string>
+	<key>LSHasLocalizedDisplayName</key>
+	<true/>
+	<key>ComponentInputModeDict</key>
+	<dict>
+		<key>tsVisibleInputModeOrderedArrayKey</key>
+		<array>
+			<string>com.apple.inputmethod.Japanese</string>
+		</array>
+		<key>tsInputModeListKey</key>
+		<dict>
+			<key>com.apple.inputmethod.Japanese</key>
+			<dict>
+				<key>TISInputSourceID</key>
+				<string>dev.ensan.inputmethod.iroha.Japanese</string>
+				<key>tsInputModePrimaryInScriptKey</key>
+				<true/>
+				<key>tsInputModeScriptKey</key>
+				<string>smJapanese</string>
+				<key>tsInputModeDefaultStateKey</key>
+				<true/>
+				<key>tsInputModeIsVisibleKey</key>
+				<true/>
+				<key>tsInputModePaletteIconFileKey</key>
+				<string>main.tiff</string>
+				<key>tsInputModeAlternateMenuIconFileKey</key>
+				<string>main.tiff</string>
+				<key>tsInputModeMenuIconFileKey</key>
+				<string>main.tiff</string>
+				<key>tsInputMethodAlternateIconFileKey</key>
+				<string>main.tiff</string>
+				<key>TISIntendedLanguage</key>
+				<string>ja</string>
+				<key>TISIconIsTemplate</key>
+				<true/>
+			</dict>
+		</dict>
+	</dict>
+	<key>TISIntendedLanguage</key>
+	<string>ja</string>
+	<key>NSPrincipalClass</key>
+	<string>$(PRODUCT_MODULE_NAME).NSManualApplication</string>
+	<key>InputMethodConnectionName</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)_Connection</string>
+	<key>InputMethodServerControllerClass</key>
+	<string>$(PRODUCT_MODULE_NAME).IrohaInputController</string>
+	<key>LSBackgroundOnly</key>
+	<true/>
+	<key>tsInputMethodCharacterRepertoireKey</key>
+	<array>
+		<string>Latn</string>
+		<string>Hira</string>
+		<string>Kana</string>
+	</array>
+	<key>tsInputMethodIconFileKey</key>
+	<string>main.tiff</string>
+</dict>
+</plist>

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="1">
+    <pkg-ref id="dev.ensan.inputmethod.iroha"/>
+    <title>iroha</title>
+    <options customize="never" require-scripts="false" hostArchitectures="x86_64,arm64"/>
+    <choices-outline>
+        <line choice="default">
+            <line choice="dev.ensan.inputmethod.iroha"/>
+        </line>
+    </choices-outline>
+    <choice id="default"/>
+    <choice id="dev.ensan.inputmethod.iroha" visible="false">
+        <pkg-ref id="dev.ensan.inputmethod.iroha"/>
+    </choice>
+    <pkg-ref id="dev.ensan.inputmethod.iroha" version="0" onConclusion="none">iroha-tmp.pkg</pkg-ref>
+</installer-gui-script>
