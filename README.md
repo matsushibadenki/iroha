@@ -1,125 +1,139 @@
 # iroha
 
-[azooKey](https://github.com/ensan-hcl/azooKey)のmacOS版からのフォークです。高精度なニューラルかな漢字変換エンジン「Zenzai」を導入した、オープンソースの日本語入力システムです。ローカルAIを用いて入力支援をします。
+iroha（いろは）は、azooKey の macOS 版コードをベースにした日本語入力メソッドです。
+macOS 標準の日本語入力に近い操作感を保ちつつ、ローカルAIによる変換候補、文章補完、選択テキスト変換を追加することを目的にしています。
 
-**現在アルファ版のため、動作は一切保証できません**。
+現在は開発版です。通常のかな漢字変換は既存の変換エンジンを中心に行い、AIは補助候補として非同期に利用します。
 
-## 動作環境
+## 現在の機能
 
-macOS 15で動作確認しています。macOS 14およびmacOS 26でも利用できますが、動作は検証していません。
+- macOS InputMethodKit ベースの日本語入力
+- ライブ変換、予測候補、ユーザ辞書、履歴学習
+- Ollama 経由の Gemma E2B による「いい感じ変換」と文章補完
+- 選択テキストに対するAI変換
+- AI候補リクエストのデバウンス、キャンセル、キャッシュ
+- Chromium / Electron 系アプリでの同期IME問い合わせ回避
+- 未対応アプリでは Apple 日本語入力へ自動切替する設定
+- 将来の MLX Swift 実装に差し替えやすいAIバックエンド分離
 
+## AIバックエンド
 
-その後、以下の手順で利用できます。
+設定画面の「AIバックエンド」から選択します。
 
-- macOSからログアウトし、再ログイン
-- 「設定」>「キーボード」>「入力ソース」を編集>「+」ボタン>「日本語」>いろはを追加>完了
-- メニューバーアイコンからいろはを選択
+- `オフ`: AI支援を使いません。
+- `Ollama (Gemma E2B)`: 開発初期の推奨設定です。
+- `MLX Swift`: 将来の本命実装用です。現時点では基盤のみで、推論ランタイムは未接続です。
+- `OpenAI API`: 外部APIを使った検証用です。
+- `Foundation Models`: 対応macOSで利用可能な場合の選択肢です。
 
-## 機能
+Ollama の既定値:
 
-* ニューラルかな漢字変換システム「Zenzai」による高精度な変換
-  * プロフィールプロンプト機能
-  * 履歴学習機能
-  * ユーザ辞書機能
-  * 個人最適化システム「[Tuner](https://github.com/azooKey/Tuner)」との連携機能
-* LLMによる「いい感じ変換」機能
-* ライブ変換
-* AZIKのネイティブサポート
+- モデル名: `gemma4:e2b`
+- エンドポイント: `http://localhost:11434/api/chat`
 
+Ollama を使う場合は、事前に Ollama を起動し、設定画面の接続テストで疎通を確認してください。
 
-## 開発ガイド
+## 開発環境
 
-コントリビュート歓迎です！！
-
-### 必要な環境
-* macOS 15+
-* Xcode 26.1+
-* Git LFS（必須。Hugging Face上のsubmoduleがLFSを利用しているため、未導入だとモデル重みが取得できません）
-* SwiftLint
-
-```bash
-brew install git-lfs swiftlint
-git lfs install
-```
-
-### 開発版のビルド・デバッグ
-
-#### 1. クローン
-
-submoduleにzenzのgguf重みと言語モデル（`.marisa`）が含まれるため、`--recursive`と Git LFS の有効化が必須です。
+- macOS
+- Xcode
+- SwiftLint
+- Git submodule
 
 ```bash
-git lfs install        # 未実行の場合のみ
-git clone https://github.com/matsushibadenki/iroha --recursive
-cd iroha
+brew install swiftlint
+git submodule update --init --recursive
 ```
 
-既にcloneしていてsubmoduleやLFSが揃っていない場合は以下を実行してください。
+SwiftLint のローカルキャッシュで権限エラーが出る場合は、キャッシュ先を明示してください。
 
 ```bash
-git submodule update --init
-git -C azooKeyMac/Resources/zenz-v3.1-small-gguf lfs pull
-git -C azooKeyMac/Resources/base_n5_lm lfs pull
+swiftlint --quiet --strict --cache-path /private/tmp/swiftlint-cache-iroha
 ```
 
-重みファイルが正しく取得できているか、サイズで確認できます（数十MB以上あればLFSの実体、134B程度ならポインタのままです）。
+## ビルド
 
 ```bash
-ls -lh azooKeyMac/Resources/zenz-v3.1-small-gguf/ggml-model-Q5_K_M.gguf
+xcodebuild \
+  -project azooKeyMac.xcodeproj \
+  -scheme azooKeyMac \
+  -destination 'platform=macOS' \
+  -skipPackagePluginValidation \
+  build
 ```
 
-#### 2. 署名の設定（初回のみ）
+## 開発インストール
 
-`install.sh` はアーカイブビルドを行うため、Xcode上で署名設定が通っている必要があります。Apple Developer Programに加入していない場合は、Personal Teamでの署名に切り替えてください。
+開発中はユーザー領域の Input Methods にインストールするスクリプトを使います。
 
-* `azooKeyMac.xcodeproj` を Xcode で開く
-* azooKeyMac ターゲット → Signing & Capabilities で Team を自身の Personal Team に変更
-* リポジトリ内のバンドルID（`dev.ensan.inputmethod.iroha` など）を、自身の所有するプレフィックスに一括置換（例: `dev.yourname.inputmethod.iroha`）
+```bash
+./script/dev_install_input_method.sh
+```
 
-#### 3. ビルド＆インストール
+このスクリプトは以下を行います。
+
+- Debug ビルド
+- `~/Library/Input Methods/iroha.app` への配置
+- LaunchServices の再登録
+- TextInput 系エージェントの再起動
+- `iroha` 入力ソースの自動選択
+
+入力ソースの登録が壊れた場合は、重複登録を整理してから入れ直します。
+
+```bash
+swift script/reset_iroha_input_sources.swift
+./script/dev_install_input_method.sh
+```
+
+管理者権限が必要な環境では、システム設定から手動で入力ソースを削除・追加してください。
+
+## リリース向けインストール
+
+`install.sh` はアーカイブビルドを行い、`/Library/Input Methods/iroha.app` にインストールします。
+署名設定が必要です。
 
 ```bash
 ./install.sh
 ```
 
-`.pkg`によるインストールと同等の状態になります。その後、上記の「リリース版インストール」の手順（ログアウト→入力ソース追加）を行ってください。
+SwiftLint を一時的にスキップする場合:
 
-開発中はいろはのプロセスをkillすることで最新版を反映することが出来ます。また、必要に応じて入力ソースからいろはを削除して再度追加する、macOSからログアウトして再ログインするなど、リセットが必要になる場合があります。
+```bash
+./install.sh --ignore-lint
+```
 
-### 開発時のトラブルシューティング
+## よくある問題
 
-`install.sh`でビルドが成功しない場合、以下をご確認ください。
+### 入力ソースに表示されない
 
-* 署名エラーで失敗する場合は、上記「署名の設定」が完了しているかを確認してください（Team変更とバンドルID置換の両方が必要です）
-* 「Packages are not supported when using legacy build locations, but the current project has them enabled.」と表示される場合は[https://qiita.com/glassmonkey/items/3e8203900b516878ff2c](https://qiita.com/glassmonkey/items/3e8203900b516878ff2c)を参考に、Xcodeの設定をご確認ください
-* Xcode 26.0ではビルドできない可能性があります。Xcode 16系または26.1以降をご利用ください。
+- `./script/dev_install_input_method.sh` を再実行する
+- システム設定を開き直す
+- 必要ならログアウト、再ログインする
+- 重複登録がある場合は `script/reset_iroha_input_sources.swift` で整理する
 
-変換精度がリリース版に比べて悪いと感じた場合、以下をご確認ください。
-* Git LFSが導入されていない環境では、重みファイルがローカル環境に落とせていない場合があります。`azooKeyMac/Resources/zenz-v3.1-small-gguf/ggml-model-Q5_K_M.gguf` が数十MB以上あるかを確認し、ポインタのままであれば `git -C azooKeyMac/Resources/zenz-v3.1-small-gguf lfs pull` を実行してください
+### Chromium / Electron 系アプリで入力が不安定
 
-### pkgファイルの作成
-`pkgbuild.sh`によって配布用のdmgファイルを作成できます。`build/iroha.app` としてDeveloper IDで署名済みの.appを配置してください。
+InputMethodKit では、入力中にクライアントへ同期問い合わせを行うと一部アプリでフリーズすることがあります。
+iroha では `attributes`、`selectedRange`、`markedRange`、`string` などの危険な同期呼び出しを避ける経路を入れています。
 
+それでも特定アプリで問題が出る場合は、設定の「未対応アプリではApple日本語入力へ自動切替」を有効にしてください。
 
-## Community Forks
+### Ollama に接続できない
 
-### [fcitx5-hazkey](https://github.com/7ka-Hiira/fcitx5-hazkey)
-@7ka-Hiira さんによるLinux系OS向けのクライアント実装です。
+- Ollama が起動しているか確認する
+- `http://localhost:11434/api/chat` が設定されているか確認する
+- Gemma E2B のモデル名が設定と一致しているか確認する
+- 設定画面の接続テストを使う
 
-### [azooKey-Windows](https://github.com/fkunn1326/azooKey-Windows)
-@fkunn1326 さんによるWindows向けクライアント実装です。
+## ディレクトリ
 
-### [azoo-key-skkserv](https://github.com/gitusp/azoo-key-skkserv)
-@gitusp さんによるSKKクライアント向けのSKKサーバ実装です。macOS向けGUIアプリケーションを含みます。
+- `azooKeyMac/`: macOS IME アプリ本体
+- `Core/`: 変換、設定、AIバックエンドなどの共有ロジック
+- `script/`: 開発インストール、入力ソース整理、入力ソース選択
+- `azooKeyMacTests/`: 回帰テスト
+- `azooKeyMacUITests/`: UIテスト
 
-## Reference
+## 出自
 
-Thanks to authors!!
-
-* https://mzp.hatenablog.com/entry/2017/09/17/220320
-* https://www.logcg.com/en/archives/2078.html
-* https://stackoverflow.com/questions/27813151/how-to-develop-a-simple-input-method-for-mac-os-x-in-swift
-* https://mzp.booth.pm/items/809262
-
-## Acknowledgement
-本プロジェクトは情報処理推進機構(IPA)による[2024年度未踏IT人材発掘・育成事業](https://www.ipa.go.jp/jinzai/mitou/it/2024/koubokekka.html)の支援を受けて開発を行いました。
+このプロジェクトは [azooKey](https://github.com/ensan-hcl/azooKey) の macOS 関連コードをベースにしています。
+iroha では macOS 向け入力体験とローカルAI支援に焦点を当てて開発しています。

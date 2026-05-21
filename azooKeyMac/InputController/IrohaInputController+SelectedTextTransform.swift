@@ -217,54 +217,27 @@ extension IrohaInputController {
 
         Task {
             do {
-                // Create custom prompt for text transformation with context
-                var systemPrompt = """
-                Transform the given text according to the user's instructions.
-                Return only the transformed text without any additional explanation or formatting.
-                """
-
-                // Add context if available
-                if !beforeContext.isEmpty || !afterContext.isEmpty {
-                    systemPrompt += "\n\nContext information:"
-                    if !beforeContext.isEmpty {
-                        systemPrompt += "\nText before: ...\(beforeContext)"
-                    }
-                    systemPrompt += "\nText to transform: \(selectedText)"
-                    if !afterContext.isEmpty {
-                        systemPrompt += "\nText after: \(afterContext)..."
-                    }
-                } else {
-                    systemPrompt += "\n\nText to transform: \(selectedText)"
-                }
-
-                systemPrompt += "\n\nUser instructions: \(prompt)"
+                let systemPrompt = self.makeTextTransformPrompt(
+                    selectedText: selectedText,
+                    prompt: prompt,
+                    beforeContext: beforeContext,
+                    afterContext: afterContext
+                )
 
                 await MainActor.run {
                     self.segmentsManager.appendDebugMessage("transformSelectedText: Created system prompt")
                 }
 
-                let backend: AIBackend
-                switch aiBackend {
-                case .foundationModels:
-                    backend = .foundationModels
-                case .ollama:
-                    backend = .ollama
-                case .mlxSwift:
-                    backend = .mlxSwift
-                case .openAI:
-                    backend = .openAI
-                case .off:
+                guard let backend = self.aiBackend(from: aiBackend) else {
                     return
                 }
 
                 let apiKey = Config.OpenAiApiKey().value
-                if backend == .openAI {
-                    guard !apiKey.isEmpty else {
-                        await MainActor.run {
-                            self.segmentsManager.appendDebugMessage("transformSelectedText: No OpenAI API key configured")
-                        }
-                        return
+                guard self.hasRequiredAPIKey(backend: backend, apiKey: apiKey) else {
+                    await MainActor.run {
+                        self.segmentsManager.appendDebugMessage("transformSelectedText: No OpenAI API key configured")
                     }
+                    return
                 }
 
                 await MainActor.run {
@@ -274,25 +247,13 @@ extension IrohaInputController {
                     self.segmentsManager.appendDebugMessage(message)
                 }
 
-                let modelName: String
-                let apiEndpoint: String
-                switch backend {
-                case .ollama:
-                    modelName = Config.OllamaModelName().value
-                    apiEndpoint = Config.OllamaApiEndpoint().value
-                case .mlxSwift:
-                    modelName = Config.MLXSwiftModelName().value
-                    apiEndpoint = ""
-                default:
-                    modelName = Config.OpenAiModelName().value
-                    apiEndpoint = self.endpoint
-                }
+                let backendConfig = self.textTransformBackendConfig(for: backend)
                 let result = try await AIClient.sendTextTransformRequest(
                     systemPrompt,
                     backend: backend,
-                    modelName: modelName,
+                    modelName: backendConfig.modelName,
                     apiKey: apiKey,
-                    apiEndpoint: apiEndpoint,
+                    apiEndpoint: backendConfig.apiEndpoint,
                     logger: { [weak self] message in
                         self?.segmentsManager.appendDebugMessage(message)
                     }
@@ -430,75 +391,36 @@ extension IrohaInputController {
             throw NSError(domain: "TransformationError", code: -1, userInfo: [NSLocalizedDescriptionKey: "AI transformation is not available. Please enable AI backend in preferences."])
         }
 
-        // Create custom prompt for text transformation with context
-        var systemPrompt = """
-        Transform the given text according to the user's instructions.
-        Return only the transformed text without any additional explanation or formatting.
-        """
+        let systemPrompt = self.makeTextTransformPrompt(
+            selectedText: selectedText,
+            prompt: prompt,
+            beforeContext: beforeContext,
+            afterContext: afterContext
+        )
 
-        // Add context if available
-        if !beforeContext.isEmpty || !afterContext.isEmpty {
-            systemPrompt += "\n\nContext information:"
-            if !beforeContext.isEmpty {
-                systemPrompt += "\nText before: ...\(beforeContext)"
-            }
-            systemPrompt += "\nText to transform: \(selectedText)"
-            if !afterContext.isEmpty {
-                systemPrompt += "\nText after: \(afterContext)..."
-            }
-        } else {
-            systemPrompt += "\n\nText to transform: \(selectedText)"
-        }
-
-        systemPrompt += "\n\nUser instructions: \(prompt)"
-
-        let backend: AIBackend
-        switch aiBackend {
-        case .foundationModels:
-            backend = .foundationModels
-        case .ollama:
-            backend = .ollama
-        case .mlxSwift:
-            backend = .mlxSwift
-        case .openAI:
-            backend = .openAI
-        case .off:
+        guard let backend = self.aiBackend(from: aiBackend) else {
             throw NSError(domain: "TransformationError", code: -1, userInfo: [NSLocalizedDescriptionKey: "AI transformation is not available. Please enable AI backend in preferences."])
         }
 
         let apiKey = Config.OpenAiApiKey().value
-        if backend == .openAI {
-            guard !apiKey.isEmpty else {
-                await MainActor.run {
-                    self.segmentsManager.appendDebugMessage("getTransformationPreview: No OpenAI API key configured")
-                }
-                throw NSError(domain: "TransformationError", code: -2, userInfo: [NSLocalizedDescriptionKey: "OpenAI API key is missing. Please configure your API key in preferences."])
+        guard self.hasRequiredAPIKey(backend: backend, apiKey: apiKey) else {
+            await MainActor.run {
+                self.segmentsManager.appendDebugMessage("getTransformationPreview: No OpenAI API key configured")
             }
+            throw NSError(domain: "TransformationError", code: -2, userInfo: [NSLocalizedDescriptionKey: "OpenAI API key is missing. Please configure your API key in preferences."])
         }
 
         await MainActor.run {
             self.segmentsManager.appendDebugMessage("getTransformationPreview: Sending preview request (\(backend.rawValue))")
         }
 
-        let modelName: String
-        let apiEndpoint: String
-        switch backend {
-        case .ollama:
-            modelName = Config.OllamaModelName().value
-            apiEndpoint = Config.OllamaApiEndpoint().value
-        case .mlxSwift:
-            modelName = Config.MLXSwiftModelName().value
-            apiEndpoint = ""
-        default:
-            modelName = Config.OpenAiModelName().value
-            apiEndpoint = self.endpoint
-        }
+        let backendConfig = self.textTransformBackendConfig(for: backend)
         let result = try await AIClient.sendTextTransformRequest(
             systemPrompt,
             backend: backend,
-            modelName: modelName,
+            modelName: backendConfig.modelName,
             apiKey: apiKey,
-            apiEndpoint: apiEndpoint,
+            apiEndpoint: backendConfig.apiEndpoint,
             logger: { [weak self] message in
                 self?.segmentsManager.appendDebugMessage(message)
             }
@@ -509,5 +431,58 @@ extension IrohaInputController {
         }
 
         return result
+    }
+
+    private func makeTextTransformPrompt(selectedText: String, prompt: String, beforeContext: String, afterContext: String) -> String {
+        var systemPrompt = """
+        Transform the given text according to the user's instructions.
+        Return only the transformed text without any additional explanation or formatting.
+        """
+
+        if beforeContext.isEmpty && afterContext.isEmpty {
+            systemPrompt += "\n\nText to transform: \(selectedText)"
+        } else {
+            systemPrompt += "\n\nContext information:"
+            if !beforeContext.isEmpty {
+                systemPrompt += "\nText before: ...\(beforeContext)"
+            }
+            systemPrompt += "\nText to transform: \(selectedText)"
+            if !afterContext.isEmpty {
+                systemPrompt += "\nText after: \(afterContext)..."
+            }
+        }
+
+        systemPrompt += "\n\nUser instructions: \(prompt)"
+        return systemPrompt
+    }
+
+    private func aiBackend(from preference: Config.AIBackendPreference.Value) -> AIBackend? {
+        switch preference {
+        case .foundationModels:
+            .foundationModels
+        case .ollama:
+            .ollama
+        case .mlxSwift:
+            .mlxSwift
+        case .openAI:
+            .openAI
+        case .off:
+            nil
+        }
+    }
+
+    private func hasRequiredAPIKey(backend: AIBackend, apiKey: String) -> Bool {
+        backend != .openAI || !apiKey.isEmpty
+    }
+
+    private func textTransformBackendConfig(for backend: AIBackend) -> (modelName: String, apiEndpoint: String) {
+        switch backend {
+        case .ollama:
+            (Config.OllamaModelName().value, Config.OllamaApiEndpoint().value)
+        case .mlxSwift:
+            (Config.MLXSwiftModelName().value, "")
+        default:
+            (Config.OpenAiModelName().value, self.endpoint)
+        }
     }
 }

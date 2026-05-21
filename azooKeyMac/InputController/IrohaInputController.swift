@@ -1,11 +1,124 @@
-import Cocoa
 import Carbon
+import Cocoa
 import Core
 import InputMethodKit
 import KanaKanjiConverterModuleWithDefaultDictionary
 
+private final class AISuggestionCoordinator {
+    struct Request {
+        var prompt: String
+        var target: String
+        var modelName: String
+        var backend: AIBackend
+        var apiKey: String
+        var apiEndpoint: String
+    }
+
+    private struct RequestKey: Hashable {
+        var backend: AIBackend
+        var prompt: String
+        var target: String
+        var modelName: String
+        var apiEndpoint: String
+    }
+
+    private var currentTask: Task<Void, Never>?
+    private var cachedPredictions: [RequestKey: [String]] = [:]
+    private var cacheOrder: [RequestKey] = []
+    private let maxCacheCount = 64
+    private let debounceNanoseconds: UInt64 = 250_000_000
+
+    func cancel() {
+        self.currentTask?.cancel()
+        self.currentTask = nil
+    }
+
+    func request(
+        _ requestConfig: Request,
+        logger: @escaping (String) -> Void,
+        completion: @escaping (Result<[String], Error>) -> Void
+    ) {
+        let key = RequestKey(
+            backend: requestConfig.backend,
+            prompt: requestConfig.prompt,
+            target: requestConfig.target,
+            modelName: requestConfig.modelName,
+            apiEndpoint: requestConfig.apiEndpoint
+        )
+
+        if let predictions = self.cachedPredictions[key] {
+            logger("AI suggestion cache hit: \(predictions)")
+            completion(.success(predictions))
+            return
+        }
+
+        self.cancel()
+
+        let request = OpenAIRequest(
+            prompt: requestConfig.prompt,
+            target: requestConfig.target,
+            modelName: requestConfig.modelName
+        )
+        let safeLogger: (String) -> Void = { message in
+            Task { @MainActor in
+                logger(message)
+            }
+        }
+
+        self.currentTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: self?.debounceNanoseconds ?? 250_000_000)
+                try Task.checkCancellation()
+
+                safeLogger("AI suggestion request started")
+                let predictions = try await AIClient.sendRequest(
+                    request,
+                    backend: requestConfig.backend,
+                    apiKey: requestConfig.apiKey,
+                    apiEndpoint: requestConfig.apiEndpoint,
+                    logger: safeLogger
+                )
+                try Task.checkCancellation()
+
+                let coordinator = self
+                await MainActor.run {
+                    guard let coordinator else {
+                        return
+                    }
+                    coordinator.store(predictions: predictions, for: key)
+                    logger("AI suggestion request completed: \(predictions)")
+                    completion(.success(predictions))
+                    coordinator.currentTask = nil
+                }
+            } catch is CancellationError {
+                await MainActor.run {
+                    logger("AI suggestion request cancelled")
+                }
+            } catch {
+                let coordinator = self
+                await MainActor.run {
+                    logger("AI suggestion request failed: \(error.localizedDescription)")
+                    completion(.failure(error))
+                    coordinator?.currentTask = nil
+                }
+            }
+        }
+    }
+
+    private func store(predictions: [String], for key: RequestKey) {
+        self.cachedPredictions[key] = predictions
+        self.cacheOrder.removeAll { $0 == key }
+        self.cacheOrder.append(key)
+
+        while self.cacheOrder.count > self.maxCacheCount {
+            let oldest = self.cacheOrder.removeFirst()
+            self.cachedPredictions.removeValue(forKey: oldest)
+        }
+    }
+}
+
 @objc(IrohaInputController)
-class IrohaInputController: IMKInputController, NSMenuItemValidation { // swiftlint:disable:this type_name
+class IrohaInputController: IMKInputController, NSMenuItemValidation {
     var segmentsManager: SegmentsManager
     private(set) var inputState: InputState = .none
     private var inputLanguage: InputLanguage = .japanese
@@ -29,6 +142,7 @@ class IrohaInputController: IMKInputController, NSMenuItemValidation { // swiftl
 
     private var replaceSuggestionWindow: NSWindow
     private var replaceSuggestionsViewController: ReplaceSuggestionsViewController
+    private let aiSuggestionCoordinator = AISuggestionCoordinator()
 
     var promptInputWindow: PromptInputWindow
     var isPromptWindowVisible: Bool = false
@@ -185,6 +299,7 @@ class IrohaInputController: IMKInputController, NSMenuItemValidation { // swiftl
     @MainActor
     override func deactivateServer(_ sender: Any!) {
         DevLog.write("deactivateServer sender=\(String(describing: sender))")
+        self.aiSuggestionCoordinator.cancel()
         self.segmentsManager.deactivate()
         self.candidatesWindow.orderOut(nil)
         self.predictionWindow.orderOut(nil)
@@ -566,9 +681,7 @@ class IrohaInputController: IMKInputController, NSMenuItemValidation { // swiftl
             self.switchInputLanguage(language, client: client)
         // PredictiveSuggestion
         case .requestPredictiveSuggestion:
-            // 「つづき」を直接入力し、コンテキストを渡す
-            self.segmentsManager.insertAtCursorPosition("つづき", inputStyle: self.inputStyle)
-            self.requestReplaceSuggestion()
+            self.requestPredictiveSuggestion()
         case .acceptPredictionCandidate:
             self.acceptPredictionCandidate()
         // ReplaceSuggestion
@@ -683,7 +796,7 @@ class IrohaInputController: IMKInputController, NSMenuItemValidation { // swiftl
             "Chromium Embedded Framework.framework",
             "Brave Browser Framework.framework",
             "Google Chrome Framework.framework",
-            "Microsoft Edge Framework.framework",
+            "Microsoft Edge Framework.framework"
         ]
         let hasRiskyFramework = frameworkNames.contains { frameworkName in
             guard let frameworksURL else {
@@ -707,7 +820,7 @@ class IrohaInputController: IMKInputController, NSMenuItemValidation { // swiftl
             "microsoft.word",
             "microsoft.excel",
             "microsoft.powerpoint",
-            "microsoft.teams",
+            "microsoft.teams"
         ]
         let riskyNameMatches = [
             "electron",
@@ -725,7 +838,7 @@ class IrohaInputController: IMKInputController, NSMenuItemValidation { // swiftl
             "microsoft word",
             "microsoft excel",
             "microsoft powerpoint",
-            "microsoft teams",
+            "microsoft teams"
         ]
         let result =
             hasRiskyFramework ||
@@ -799,7 +912,9 @@ class IrohaInputController: IMKInputController, NSMenuItemValidation { // swiftl
             DevLog.write("selectInputSource failed: sourceList nil id=\(id)")
             return
         }
-        let sources = sourceList.takeRetainedValue() as! [TISInputSource]
+        guard let sources = sourceList.takeRetainedValue() as? [TISInputSource] else {
+            return
+        }
         guard let source = sources.first else {
             DevLog.write("selectInputSource failed: source not found id=\(id)")
             return
@@ -1070,15 +1185,14 @@ class IrohaInputController: IMKInputController, NSMenuItemValidation { // swiftl
         let text = NSMutableAttributedString(string: "")
         let currentMarkedText = self.segmentsManager.getCurrentMarkedText(inputState: self.inputState)
         for part in currentMarkedText where !part.content.isEmpty {
-            let attributes: [NSAttributedString.Key: Any]? = switch part.focus {
-            case .focused: highlight
-            case .unfocused: underline
-            case .none: [:]
-            }
             text.append(
                 NSAttributedString(
                     string: part.content,
-                    attributes: attributes
+                    attributes: self.markedTextAttributes(
+                        focus: part.focus,
+                        highlight: highlight,
+                        underline: underline
+                    )
                 )
             )
         }
@@ -1094,6 +1208,21 @@ class IrohaInputController: IMKInputController, NSMenuItemValidation { // swiftl
             selectionRange: currentMarkedText.selectionRange,
             replacementRange: NSRange(location: NSNotFound, length: 0)
         )
+    }
+
+    private func markedTextAttributes(
+        focus: SegmentsManager.MarkedText.FocusState,
+        highlight: [NSAttributedString.Key: Any]?,
+        underline: [NSAttributedString.Key: Any]?
+    ) -> [NSAttributedString.Key: Any]? {
+        switch focus {
+        case .focused:
+            highlight
+        case .unfocused:
+            underline
+        case .none:
+            [:]
+        }
     }
 
     @MainActor
@@ -1179,7 +1308,11 @@ extension IrohaInputController: ReplaceSuggestionsViewControllerDelegate {
 // Suggest Candidate
 extension IrohaInputController {
     // MARK: - Replace Suggestion Request Handling
-    @MainActor func requestReplaceSuggestion() {
+    @MainActor func requestReplaceSuggestion(
+        targetOverride: String? = nil,
+        composingCountOverride: Int? = nil,
+        promptOverride: String? = nil
+    ) {
         self.segmentsManager.appendDebugMessage("requestReplaceSuggestion: 開始")
 
         // リクエスト開始時に前回の候補をクリアし、ウィンドウを非表示にする
@@ -1196,99 +1329,48 @@ extension IrohaInputController {
             return
         }
 
-        let composingText = self.segmentsManager.convertTarget
+        let composingText = targetOverride ?? self.segmentsManager.convertTarget
+        let composingCount = composingCountOverride ?? composingText.count
 
         // プロンプトを取得
-        let prompt = self.getLeftSideContext(maxCount: 100) ?? ""
+        let prompt = promptOverride ?? self.getLeftSideContext(maxCount: 100) ?? ""
 
         self.segmentsManager.appendDebugMessage("プロンプト取得成功: \(prompt) << \(composingText)")
 
-        let apiKey = Config.OpenAiApiKey().value
-        let modelName: String
-        let apiEndpoint: String
-        switch preference {
-        case .ollama:
-            modelName = Config.OllamaModelName().value
-            apiEndpoint = Config.OllamaApiEndpoint().value
-        case .mlxSwift:
-            modelName = Config.MLXSwiftModelName().value
-            apiEndpoint = ""
-        default:
-            modelName = Config.OpenAiModelName().value
-            apiEndpoint = Config.OpenAiApiEndpoint().value
-        }
-        let request = OpenAIRequest(prompt: prompt, target: composingText, modelName: modelName)
-        self.segmentsManager.appendDebugMessage("APIリクエスト準備完了: prompt=\(prompt), target=\(composingText), modelName=\(modelName)")
-
-        // Get selected backend
-        let backend: AIBackend
-        switch preference {
-        case .off:
-            // Already checked above, but defensive programming
+        guard let requestConfig = self.aiSuggestionRequestConfig(
+            preference: preference,
+            prompt: prompt,
+            target: composingText
+        ) else {
             self.segmentsManager.appendDebugMessage("Unexpected .off state in backend selection")
             return
-        case .foundationModels:
-            backend = .foundationModels
-        case .ollama:
-            backend = .ollama
-        case .mlxSwift:
-            backend = .mlxSwift
-        case .openAI:
-            backend = .openAI
         }
-        self.segmentsManager.appendDebugMessage("Using backend: \(backend.rawValue)")
+        self.segmentsManager.appendDebugMessage("APIリクエスト準備完了: prompt=\(prompt), target=\(composingText), modelName=\(requestConfig.modelName)")
+        self.segmentsManager.appendDebugMessage("Using backend: \(requestConfig.backend.rawValue)")
 
-        // 非同期タスクでリクエストを送信
-        Task {
-            do {
-                self.segmentsManager.appendDebugMessage("APIリクエスト送信中...")
-                let predictions = try await AIClient.sendRequest(
-                    request,
-                    backend: backend,
-                    apiKey: apiKey,
-                    apiEndpoint: apiEndpoint,
-                    logger: { [weak self] message in
-                        self?.segmentsManager.appendDebugMessage(message)
-                    }
-                )
-                self.segmentsManager.appendDebugMessage("APIレスポンス受信成功: \(predictions)")
+        self.segmentsManager.appendDebugMessage("AI候補リクエストをキューへ追加")
+        self.aiSuggestionCoordinator.request(
+            requestConfig,
+            logger: { [weak self] message in
+                self?.segmentsManager.appendDebugMessage(message)
+            },
+            completion: { [weak self] result in
+                guard let self else {
+                    return
+                }
 
-                // String配列からCandidate配列に変換
-                let candidates = predictions.map { text in
-                    Candidate(
-                        text: text,
-                        value: PValue(0),
-                        composingCount: .surfaceCount(composingText.count),
-                        lastMid: 0,
-                        data: [],
-                        actions: [],
-                        inputable: true
+                switch result {
+                case .success(let predictions):
+                    self.segmentsManager.appendDebugMessage("APIレスポンス受信成功: \(predictions)")
+                    let candidates = self.makeReplaceSuggestionCandidates(
+                        predictions: predictions,
+                        composingCount: composingCount
                     )
-                }
+                    self.showReplaceSuggestions(candidates)
+                case .failure(let error):
+                    let errorMessage = "APIリクエストエラー: \(error.localizedDescription)"
+                    self.segmentsManager.appendDebugMessage(errorMessage)
 
-                self.segmentsManager.appendDebugMessage("候補変換成功: \(candidates.map { $0.text })")
-
-                // 候補をウィンドウに更新
-                await MainActor.run {
-                    self.segmentsManager.appendDebugMessage("候補ウィンドウ更新中...")
-                    if !candidates.isEmpty {
-                        self.segmentsManager.setReplaceSuggestions(candidates)
-                        self.replaceSuggestionsViewController.updateCandidatePresentations(
-                            candidates.map { .init(candidate: $0) },
-                            selectionIndex: nil,
-                            cursorLocation: getCursorLocation()
-                        )
-                        self.replaceSuggestionWindow.setIsVisible(true)
-                        self.replaceSuggestionWindow.makeKeyAndOrderFront(nil)
-                        self.segmentsManager.appendDebugMessage("候補ウィンドウ更新完了")
-                    }
-                }
-            } catch {
-                let errorMessage = "APIリクエストエラー: \(error.localizedDescription)"
-                self.segmentsManager.appendDebugMessage(errorMessage)
-
-                // ユーザーに通知
-                await MainActor.run {
                     let alert = NSAlert()
                     alert.messageText = "変換に失敗しました"
                     alert.informativeText = error.localizedDescription
@@ -1297,8 +1379,102 @@ extension IrohaInputController {
                     alert.runModal()
                 }
             }
-        }
+        )
         self.segmentsManager.appendDebugMessage("requestReplaceSuggestion: 終了")
+    }
+
+    private func aiSuggestionRequestConfig(
+        preference: Config.AIBackendPreference.Value,
+        prompt: String,
+        target: String
+    ) -> AISuggestionCoordinator.Request? {
+        let apiKey = Config.OpenAiApiKey().value
+        switch preference {
+        case .foundationModels:
+            return AISuggestionCoordinator.Request(
+                prompt: prompt,
+                target: target,
+                modelName: Config.OpenAiModelName().value,
+                backend: .foundationModels,
+                apiKey: apiKey,
+                apiEndpoint: Config.OpenAiApiEndpoint().value
+            )
+        case .ollama:
+            return AISuggestionCoordinator.Request(
+                prompt: prompt,
+                target: target,
+                modelName: Config.OllamaModelName().value,
+                backend: .ollama,
+                apiKey: apiKey,
+                apiEndpoint: Config.OllamaApiEndpoint().value
+            )
+        case .mlxSwift:
+            return AISuggestionCoordinator.Request(
+                prompt: prompt,
+                target: target,
+                modelName: Config.MLXSwiftModelName().value,
+                backend: .mlxSwift,
+                apiKey: apiKey,
+                apiEndpoint: ""
+            )
+        case .openAI:
+            return AISuggestionCoordinator.Request(
+                prompt: prompt,
+                target: target,
+                modelName: Config.OpenAiModelName().value,
+                backend: .openAI,
+                apiKey: apiKey,
+                apiEndpoint: Config.OpenAiApiEndpoint().value
+            )
+        case .off:
+            return nil
+        }
+    }
+
+    @MainActor func requestPredictiveSuggestion() {
+        let prompt = self.getLeftSideContext(maxCount: 200) ?? ""
+        self.requestReplaceSuggestion(
+            targetOverride: "つづき",
+            composingCountOverride: 0,
+            promptOverride: prompt
+        )
+    }
+
+    @MainActor private func makeReplaceSuggestionCandidates(predictions: [String], composingCount: Int) -> [Candidate] {
+        let candidates = predictions.map { text in
+            Candidate(
+                text: text,
+                value: PValue(0),
+                composingCount: .surfaceCount(composingCount),
+                lastMid: 0,
+                data: [],
+                actions: [],
+                inputable: true
+            )
+        }
+        self.segmentsManager.appendDebugMessage("候補変換成功: \(candidates.map { $0.text })")
+        return candidates
+    }
+
+    @MainActor private func showReplaceSuggestions(_ candidates: [Candidate]) {
+        self.segmentsManager.appendDebugMessage("候補ウィンドウ更新中...")
+        guard !candidates.isEmpty else {
+            self.segmentsManager.setReplaceSuggestions([])
+            self.replaceSuggestionWindow.setIsVisible(false)
+            self.replaceSuggestionWindow.orderOut(nil)
+            self.segmentsManager.appendDebugMessage("AI候補が空のため候補ウィンドウを閉じました")
+            return
+        }
+
+        self.segmentsManager.setReplaceSuggestions(candidates)
+        self.replaceSuggestionsViewController.updateCandidatePresentations(
+            candidates.map { .init(candidate: $0) },
+            selectionIndex: nil,
+            cursorLocation: self.getCursorLocation()
+        )
+        self.replaceSuggestionWindow.setIsVisible(true)
+        self.replaceSuggestionWindow.makeKeyAndOrderFront(nil)
+        self.segmentsManager.appendDebugMessage("候補ウィンドウ更新完了")
     }
 
     // MARK: - Window Management

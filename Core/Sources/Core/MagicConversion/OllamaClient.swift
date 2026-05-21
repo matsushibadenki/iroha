@@ -40,6 +40,9 @@ public enum OllamaClient {
 
         Input: `\(request.prompt)<\(request.target)>`
 
+        Generate 3 to 8 candidates for a Japanese IME.
+        Prefer candidates that are useful while typing: kanji conversion, natural phrasing, and short continuations.
+        Do not include explanations, markdown, numbering, or duplicate candidates.
         Return only JSON in this exact shape:
         {"predictions":["候補1","候補2","候補3"]}
         """
@@ -48,6 +51,7 @@ public enum OllamaClient {
             prompt: prompt,
             modelName: request.modelName.isEmpty ? defaultModelName : request.modelName,
             endpoint: endpoint,
+            numPredict: 96,
             logger: logger
         )
         return try parsePredictions(from: content)
@@ -68,6 +72,7 @@ public enum OllamaClient {
             """,
             modelName: modelName.isEmpty ? defaultModelName : modelName,
             endpoint: endpoint,
+            numPredict: 512,
             logger: logger
         )
         return try parseTextTransformResult(from: content)
@@ -77,6 +82,7 @@ public enum OllamaClient {
         prompt: String,
         modelName: String,
         endpoint: String,
+        numPredict: Int,
         logger: ((String) -> Void)? = nil
     ) async throws -> String {
         let endpoint = endpoint.isEmpty ? defaultEndpoint : endpoint
@@ -91,10 +97,16 @@ public enum OllamaClient {
             "model": modelName,
             "stream": false,
             "format": "json",
+            "keep_alive": "10m",
+            "options": [
+                "temperature": 0.2,
+                "top_p": 0.9,
+                "num_predict": numPredict
+            ],
             "messages": [
                 [
                     "role": "system",
-                    "content": "You are a Japanese input method assistant. Prefer concise, natural Japanese candidates. Return strict JSON only."
+                    "content": "You are a local Japanese input method assistant. Return strict compact JSON only."
                 ],
                 [
                     "role": "user",
